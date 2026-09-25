@@ -40,7 +40,7 @@
         </div>
         <div class="form-group">
           <label>竞赛（可选）</label>
-          <select id="contestSelect"><option value="">练习模式（不计排名）</option></select>
+          <select id="contestSelect" onchange="onContestChange()"><option value="">练习模式（不计排名）</option></select>
         </div>
       </div>
     </div>
@@ -139,14 +139,33 @@
       } catch (e) { sel.innerHTML = '<option>加载失败</option>'; }
     }
 
+    let contestMeta = {};
+
     async function loadContests() {
       const sel = document.getElementById("contestSelect");
       try {
         const data = await OJ_.api("/contests");
         const runnable = data.items.filter(c => c.status === "running");
+        contestMeta = {};
+        runnable.forEach(c => { contestMeta[c.id] = c; });
         sel.innerHTML = '<option value="">练习模式（不计排名）</option>' +
-          runnable.map(c => `<option value="${OJ_.esc(c.id)}">${OJ_.esc(c.title)}</option>`).join("");
+          runnable.map(c => `<option value="${OJ_.esc(c.id)}">${c.has_password ? "🔒 " : ""}${OJ_.esc(c.title)}</option>`).join("");
+        // 支持从竞赛详情带入 ?c=<contestId>
+        const want = new URLSearchParams(location.search).get("c");
+        if (want && contestMeta[want]) { sel.value = want; onContestChange(); }
       } catch (e) {}
+    }
+
+    async function onContestChange() {
+      const sel = document.getElementById("contestSelect");
+      const c = contestMeta[sel.value];
+      if (c && c.has_password && !OJ_.contestToken(c.id)) {
+        const okUnlock = await OJ_.ensureContestAccess(c.id);
+        if (!okUnlock) {
+          sel.value = "";
+          OJ_.toast("未输入竞赛密码，已切换回练习模式", "error");
+        }
+      }
     }
 
     async function onProblemChange() {
@@ -161,6 +180,21 @@
       } catch (e) {}
     }
 
+    async function postSubmission(body, cid, retried) {
+      try {
+        return await OJ_.api("/submissions", {
+          method: "POST", body,
+          headers: cid ? OJ_.contestHeaders(cid) : {},
+        });
+      } catch (e) {
+        // 竞赛需要访问密码（或密码已被管理员更换）：弹窗解锁后重试一次
+        if (!retried && cid && OJ_.isNeedPassword(e) && await OJ_.ensureContestAccess(cid, e.message)) {
+          return postSubmission(body, cid, true);
+        }
+        throw e;
+      }
+    }
+
     async function submit() {
       const user = OJ_.currentUser();
       if (!user) { OJ_.toast("请先登录后提交", "error"); location.href = "/index.html?login=1"; return; }
@@ -171,12 +205,13 @@
       document.getElementById("resultCard").classList.remove("hidden");
       document.getElementById("resultBadge").innerHTML = `<span class="badge PENDING pulse">排队中</span>`;
       try {
+        const cid = document.getElementById("contestSelect").value || "";
         const body = {
           code, language: document.getElementById("langSelect").value,
           problem_id: document.getElementById("problemSelect").value,
-          contest_id: document.getElementById("contestSelect").value || null,
+          contest_id: cid || null,
         };
-        const res = await OJ_.api("/submissions", { method: "POST", body });
+        const res = await postSubmission(body, cid);
         pollResult(res.id);
       } catch (e) {
         OJ_.toast(e.message, "error");

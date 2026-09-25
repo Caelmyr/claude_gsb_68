@@ -5,6 +5,7 @@ from flask import Blueprint, request
 
 from backend import config
 from backend.api import ok, err, require_auth, require_admin
+from backend.api.contests import check_contest_access
 from backend.judge import engine
 from backend.judge.ranking import contest_status
 from backend.storage import read_json
@@ -43,6 +44,9 @@ def create_submission():
             return err("竞赛尚未开始", 400)
         if not contest.get("visble", True) and request.user.get("role") != "admin":
             return err("竞赛不存在", 404)
+        resp = check_contest_access(contest, request.user)
+        if resp is not None:
+            return resp
         if contest.get("mode") == "acm" and request.user.get("role") != "admin":
             pass  # ACM 也允许提交，评分逻辑已在后端处理
     else:

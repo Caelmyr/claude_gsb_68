@@ -38,10 +38,14 @@
     try { data = await res.json(); } catch (e) { /* 非 JSON */ }
     if (res.status === 401) {
       logout();
-      throw new Error(data.message || "未登录或登录已过期");
+      const err = new Error(data.message || "未登录或登录已过期");
+      err.code = data.code; err.status = res.status; err.payload = data;
+      throw err;
     }
     if (data.code !== 0) {
-      throw new Error(data.message || ("请求失败 (" + res.status + ")"));
+      const err = new Error(data.message || ("请求失败 (" + res.status + ")"));
+      err.code = data.code; err.status = res.status; err.payload = data;
+      throw err;
     }
     return data.data;
   }
@@ -179,6 +183,88 @@
     });
   }
 
+  /* ---------- 竞赛访问密码 ---------- */
+  // 已解锁竞赛的访问令牌缓存在 localStorage：输对一次后正常浏览无需重复输入；
+  // 管理员修改/清除密码后旧令牌会被后端判定失效，届时会重新弹窗。
+  const CONTEST_TOKEN_KEY = "oj_contest_tokens";
+
+  function _contestTokens() {
+    try { return JSON.parse(localStorage.getItem(CONTEST_TOKEN_KEY) || "{}"); }
+    catch (e) { return {}; }
+  }
+  function contestToken(cid) { return _contestTokens()[cid] || ""; }
+  function setContestToken(cid, token) {
+    const m = _contestTokens();
+    if (token) m[cid] = token; else delete m[cid];
+    localStorage.setItem(CONTEST_TOKEN_KEY, JSON.stringify(m));
+  }
+  // 访问带密码竞赛的接口时携带该请求头
+  function contestHeaders(cid) {
+    const t = contestToken(cid);
+    return t ? { "X-Contest-Access": t } : {};
+  }
+  // 判断错误是否为「需要竞赛访问密码」
+  function isNeedPassword(e) { return !!(e && e.payload && e.payload.need_password); }
+
+  async function unlockContest(cid, password) {
+    const d = await api("/contests/" + encodeURIComponent(cid) + "/unlock", {
+      method: "POST", body: { password },
+    });
+    if (d && d.access_token) setContestToken(cid, d.access_token);
+    return d;
+  }
+
+  // 弹出密码输入框；确定返回密码字符串，取消返回 null
+  function promptContestPassword(cid, errorMsg) {
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "modal-mask";
+      mask.innerHTML = `<div class="modal" style="max-width:400px"><h3>🔒 需要竞赛访问密码</h3>
+        <div class="modal-body">
+          <p class="muted" style="margin-top:0">该竞赛已设置访问密码，输入正确密码后即可查看题面、提交与榜单。</p>
+          <div class="form-group"><input type="password" id="cpwInput" placeholder="请输入竞赛访问密码" autocomplete="off"></div>
+          <div class="hint" id="cpwErr" style="color:var(--red)">${esc(errorMsg || "")}</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" data-a="cancel">取消</button>
+          <button class="btn btn-primary" data-a="ok">确定</button>
+        </div></div>`;
+      const input = mask.querySelector("#cpwInput");
+      const errBox = mask.querySelector("#cpwErr");
+      function done(v) { mask.remove(); resolve(v); }
+      mask.addEventListener("click", (e) => {
+        if (e.target === mask) { done(null); return; }
+        const a = e.target.getAttribute && e.target.getAttribute("data-a");
+        if (a === "cancel") { done(null); return; }
+        if (a === "ok") {
+          const v = input.value.trim();
+          if (!v) { errBox.textContent = "请输入访问密码"; input.focus(); return; }
+          done(v);
+        }
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); mask.querySelector('[data-a="ok"]').click(); }
+      });
+      document.body.appendChild(mask);
+      setTimeout(() => input.focus(), 50);
+    });
+  }
+
+  // 确保已解锁指定竞赛：必要时循环弹窗输入密码；解锁成功返回 true，用户取消返回 false
+  async function ensureContestAccess(cid, firstError) {
+    if (!firstError && contestToken(cid)) return true;
+    let msg = firstError || "";
+    for (;;) {
+      const pwd = await promptContestPassword(cid, msg);
+      if (pwd === null) return false;
+      try {
+        await unlockContest(cid, pwd);
+        toast("密码正确，已解锁竞赛", "success");
+        return true;
+      } catch (e) { msg = e.message; }
+    }
+  }
+
   /* ---------- 页面引导 ---------- */
   async function boot(activeKey) {
     renderNav(activeKey);
@@ -211,6 +297,8 @@
     api, esc, fmtTime, fmtDuration, fmtMem, verdictBadge, difficultyLabel,
     toast, el, openModal, confirmDialog, boot, countdown,
     setSession, logout, currentUser, isAdmin, requireAuth, goLogin,
+    contestToken, setContestToken, contestHeaders, isNeedPassword,
+    unlockContest, ensureContestAccess,
     store,
   };
 })(window);

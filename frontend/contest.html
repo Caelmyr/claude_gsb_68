@@ -41,7 +41,7 @@
           <div class="card">
             <div class="flex-between wrap">
               <div>
-                <div class="card-title" style="margin-bottom:4px">${OJ.esc(c.title)} <span class="badge ${stCls}">${stLabel}</span>${c.frozen_now ? ' <span class="badge yellow">🔒 已封榜</span>' : ''}</div>
+                <div class="card-title" style="margin-bottom:4px">${OJ.esc(c.title)} <span class="badge ${stCls}">${stLabel}</span>${c.frozen_now ? ' <span class="badge yellow">🔒 已封榜</span>' : ''}${c.has_password ? ' <span class="badge gray">🔑 密码访问</span>' : ''}</div>
                 <div class="muted" style="font-size:13px">
                   模式 ${c.mode.toUpperCase()} · 题目 ${(c.problems || []).length} 道
                   · 开始 ${OJ.fmtTime(c.start_time)} · 结束 ${OJ.fmtTime(c.end_time)}
@@ -52,6 +52,7 @@
               <div class="text-right">
                 <div id="cd-${c.id}" class="countdown"></div>
                 <div class="mt-8 flex gap-8" style="justify-content:flex-end">
+                  <button class="btn btn-primary btn-sm" onclick="viewContest('${OJ.esc(c.id)}')">进入竞赛</button>
                   <a class="btn btn-outline btn-sm" href="/leaderboard.html?c=${OJ.esc(c.id)}">查看榜单</a>
                   ${isAdmin ? `
                     <button class="btn btn-outline btn-sm" onclick="openForm('${OJ.esc(c.id)}')">编辑</button>
@@ -103,6 +104,11 @@
             <label style="font-weight:400"><input type="checkbox" id="f_freeze_en" ${c && c.freeze_enabled ? "checked" : ""}> 启用封榜</label>
             <label style="font-weight:400;margin-left:12px"><input type="checkbox" id="f_visible" ${!c || c.visible ? "checked" : ""}> 公开可见</label></div>
         </div>
+        <div class="form-group"><label>访问密码</label>
+          <input id="f_password" type="text" autocomplete="off"
+            placeholder="${c && c.has_password ? "已设置密码（输入新密码可修改）" : "留空表示公开竞赛"}">
+          ${c && c.has_password ? `<label style="font-weight:400;margin-top:4px"><input type="checkbox" id="f_clear_pwd"> 清除访问密码（恢复公开）</label>` : ""}
+        </div>
         <div class="form-group"><label>竞赛题目</label>
           <div class="card" style="max-height:200px;overflow:auto;background:var(--surface-2)">${problemChecks || '<span class="muted">暂无题目</span>'}</div>
         </div>`;
@@ -132,6 +138,11 @@
         visible: document.getElementById("f_visible").checked,
         problems,
       };
+      // 访问密码：勾选清除 -> 传空串；输入新密码 -> 设置/修改；留空 -> 保持不变
+      const clearPwd = document.getElementById("f_clear_pwd");
+      const pwd = document.getElementById("f_password").value.trim();
+      if (clearPwd && clearPwd.checked) body.password = "";
+      else if (pwd) body.password = pwd;
       try {
         if (id) await OJ.api("/contests/" + id, { method: "PUT", body });
         else await OJ.api("/contests", { method: "POST", body });
@@ -139,6 +150,52 @@
         document.querySelector(".modal-mask") && document.querySelector(".modal-mask").remove();
         load();
       } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    // ---------- 进入竞赛（带密码时需先解锁） ----------
+    function fetchContest(id) {
+      return OJ.api("/contests/" + id, { headers: OJ.contestHeaders(id) });
+    }
+
+    async function viewContest(id) {
+      let c;
+      try {
+        c = await fetchContest(id);
+      } catch (e) {
+        if (!OJ.isNeedPassword(e)) { OJ.toast(e.message, "error"); return; }
+        if (!await OJ.ensureContestAccess(id, e.message)) return;
+        try { c = await fetchContest(id); }
+        catch (e2) { OJ.toast(e2.message, "error"); return; }
+      }
+      // 拉取题目标题（题目接口公开）
+      const probs = [];
+      for (const p of (c.problems || [])) {
+        let title = p.problem_id;
+        try { title = (await OJ.api("/problems/" + p.problem_id)).title; } catch (e) {}
+        probs.push(Object.assign({}, p, { title }));
+      }
+      const rows = probs.map((p, i) => `<tr>
+        <td class="mono muted">${i + 1}</td>
+        <td>${OJ.esc(p.title)} <span class="muted mono">${OJ.esc(p.problem_id)}</span></td>
+        <td class="text-center mono">${p.points != null ? p.points : 100}</td>
+        <td class="text-right">
+          <a class="btn btn-outline btn-sm" href="/problem.html?id=${OJ.esc(p.problem_id)}">题面</a>
+          <a class="btn btn-outline btn-sm" href="/editor.html?id=${OJ.esc(p.problem_id)}&c=${OJ.esc(c.id)}">提交</a>
+        </td></tr>`).join("");
+      const [stLabel, stCls] = STATUS[c.status] || ["", ""];
+      const body = `
+        <div class="muted" style="margin-bottom:8px">
+          <span class="badge ${stCls}">${stLabel}</span>
+          模式 ${String(c.mode || "acm").toUpperCase()} · 开始 ${OJ.fmtTime(c.start_time)} · 结束 ${OJ.fmtTime(c.end_time)}
+        </div>
+        ${c.description ? `<p>${OJ.esc(c.description)}</p>` : ""}
+        <div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>题目</th><th class="text-center">分值</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" class="empty">暂无题目</td></tr>`}</tbody>
+        </table></div>
+        <div class="mt-8"><a class="btn btn-outline btn-sm" href="/leaderboard.html?c=${OJ.esc(c.id)}">🏆 查看榜单</a></div>`;
+      const mask = OJ.openModal(c.title, body);
+      mask.querySelector(".modal").style.maxWidth = "720px";
     }
 
     async function del(id) {

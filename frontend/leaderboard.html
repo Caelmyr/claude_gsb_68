@@ -41,12 +41,14 @@
   <script>
     OJ.boot("leaderboard");
     let curContest = null;
+    let loading = false;    // 防止自动刷新与手动刷新并发导致重复弹窗
+    let deniedFor = null;   // 用户已取消输入密码的竞赛，避免每 5 秒反复弹窗
 
     async function loadContests() {
       const sel = OJ.el("contestSelect");
       try {
         const data = await OJ.api("/contests");
-        sel.innerHTML = data.items.map(c => `<option value="${OJ.esc(c.id)}">${OJ.esc(c.title)}</option>`).join("");
+        sel.innerHTML = data.items.map(c => `<option value="${OJ.esc(c.id)}">${c.has_password ? "🔒 " : ""}${OJ.esc(c.title)}</option>`).join("");
         if (data.items.length) { sel.value = data.items[0].id; load(); }
         else { OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">暂无竞赛</td></tr>`; }
       } catch (e) {}
@@ -54,15 +56,37 @@
 
     async function load() {
       const cid = OJ.el("contestSelect").value;
-      if (!cid) return;
+      if (!cid || loading) return;
+      if (deniedFor === cid) { showLocked(); return; }
+      loading = true;
       try {
-        const d = await OJ.api("/leaderboard/" + cid);
+        let d;
+        try {
+          d = await OJ.api("/leaderboard/" + cid, { headers: OJ.contestHeaders(cid) });
+        } catch (e) {
+          if (!OJ.isNeedPassword(e)) throw e;
+          // 需要访问密码：弹窗输入，成功后重试；取消则显示锁定提示
+          if (!await OJ.ensureContestAccess(cid, e.message)) { deniedFor = cid; showLocked(); return; }
+          d = await OJ.api("/leaderboard/" + cid, { headers: OJ.contestHeaders(cid) });
+        }
+        deniedFor = null;
         curContest = d;
         render(d);
       } catch (e) {
         OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">${OJ.esc(e.message)}</td></tr>`;
+      } finally {
+        loading = false;
       }
     }
+
+    function showLocked() {
+      OJ.el("lbTitle").textContent = "排行榜";
+      OJ.el("frozenBanner").classList.add("hidden");
+      OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">🔒 该竞赛需要访问密码
+        <div class="mt-8"><button class="btn btn-primary btn-sm" onclick="retryUnlock()">输入密码</button></div></td></tr>`;
+    }
+
+    function retryUnlock() { deniedFor = null; load(); }
 
     function render(d) {
       OJ.el("lbTitle").textContent = d.contest_title;
@@ -122,7 +146,7 @@
     }
 
     loadContests();
-    setInterval(load, 5000);
+    setInterval(() => { if (!document.querySelector(".modal-mask")) load(); }, 5000);
   </script>
 </body>
 </html>
