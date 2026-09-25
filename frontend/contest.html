@@ -41,9 +41,9 @@
           <div class="card">
             <div class="flex-between wrap">
               <div>
-                <div class="card-title" style="margin-bottom:4px">${OJ.esc(c.title)} <span class="badge ${stCls}">${stLabel}</span>${c.frozen_now ? ' <span class="badge yellow">🔒 已封榜</span>' : ''}</div>
+                <div class="card-title" style="margin-bottom:4px">${OJ.esc(c.title)} <span class="badge ${stCls}">${stLabel}</span>${c.frozen_now ? ' <span class="badge yellow">🔒 已封榜</span>' : ''}${c.has_password ? ' <span class="badge yellow">🔑 密码</span>' : ''}</div>
                 <div class="muted" style="font-size:13px">
-                  模式 ${c.mode.toUpperCase()} · 题目 ${(c.problems || []).length} 道
+                  模式 ${c.mode.toUpperCase()} · 题目 ${c.problem_count !== undefined ? c.problem_count : (c.problems || []).length} 道
                   · 开始 ${OJ.fmtTime(c.start_time)} · 结束 ${OJ.fmtTime(c.end_time)}
                   ${c.freeze_enabled ? " · 封榜 " + OJ.fmtTime(c.freeze_time) : ""}
                 </div>
@@ -52,7 +52,7 @@
               <div class="text-right">
                 <div id="cd-${c.id}" class="countdown"></div>
                 <div class="mt-8 flex gap-8" style="justify-content:flex-end">
-                  <a class="btn btn-outline btn-sm" href="/leaderboard.html?c=${OJ.esc(c.id)}">查看榜单</a>
+                  <button class="btn btn-outline btn-sm" onclick="OJ.enterContest('${OJ.esc(c.id)}')">${c.has_password && !isAdmin ? "🔑 输入密码进入" : "进入竞赛"}</button>
                   ${isAdmin ? `
                     <button class="btn btn-outline btn-sm" onclick="openForm('${OJ.esc(c.id)}')">编辑</button>
                     <button class="btn btn-danger btn-sm" onclick="del('${OJ.esc(c.id)}')">删除</button>
@@ -103,6 +103,14 @@
             <label style="font-weight:400"><input type="checkbox" id="f_freeze_en" ${c && c.freeze_enabled ? "checked" : ""}> 启用封榜</label>
             <label style="font-weight:400;margin-left:12px"><input type="checkbox" id="f_visible" ${!c || c.visible ? "checked" : ""}> 公开可见</label></div>
         </div>
+        <div class="form-row">
+          <div class="form-group"><label>访问密码</label>
+            <input id="f_password" type="text" autocomplete="off"
+              placeholder="${c && c.has_password ? "已设置密码，输入新密码可修改" : "留空则为公开竞赛"}">
+            <div class="hint mt-8">设置后，用户需输入密码才能查看题面、榜单并提交；留空即公开。</div></div>
+          ${c && c.has_password ? `<div class="form-group"><label>&nbsp;</label>
+            <label style="font-weight:400"><input type="checkbox" id="f_clear_pw" onchange="document.getElementById('f_password').disabled=this.checked"> 清除访问密码（恢复公开）</label></div>` : ""}
+        </div>
         <div class="form-group"><label>竞赛题目</label>
           <div class="card" style="max-height:200px;overflow:auto;background:var(--surface-2)">${problemChecks || '<span class="muted">暂无题目</span>'}</div>
         </div>`;
@@ -119,7 +127,7 @@
 
     async function save(id) {
       const problems = [...document.querySelectorAll('.modal input[type="checkbox"][value]')]
-        .filter(x => x.value && !["f_freeze_en","f_visible"].includes(x.id) && x.checked)
+        .filter(x => x.value && !["f_freeze_en","f_visible","f_clear_pw"].includes(x.id) && x.checked)
         .map((x, i) => ({ problem_id: x.value, points: 100, order: i + 1 }));
       const body = {
         title: document.getElementById("f_title").value.trim(),
@@ -132,6 +140,13 @@
         visible: document.getElementById("f_visible").checked,
         problems,
       };
+      // 访问密码：新建时按输入设置（留空即公开）；编辑时非空才修改，勾选清除则恢复公开
+      const pwInput = document.getElementById("f_password");
+      const pw = pwInput ? pwInput.value.trim() : "";
+      const clearPw = document.getElementById("f_clear_pw");
+      if (!id) body.password = pw;
+      else if (clearPw && clearPw.checked) body.clear_password = true;
+      else if (pw) body.password = pw;
       try {
         if (id) await OJ.api("/contests/" + id, { method: "PUT", body });
         else await OJ.api("/contests", { method: "POST", body });

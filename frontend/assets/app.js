@@ -41,7 +41,10 @@
       throw new Error(data.message || "未登录或登录已过期");
     }
     if (data.code !== 0) {
-      throw new Error(data.message || ("请求失败 (" + res.status + ")"));
+      const err = new Error(data.message || ("请求失败 (" + res.status + ")"));
+      err.status = res.status;
+      err.data = data;   // 保留完整响应（如 need_password 标记），供页面特判
+      throw err;
     }
     return data.data;
   }
@@ -149,6 +152,83 @@
 
   function el(id) { return document.getElementById(id); }
 
+  /* ---------- 竞赛访问密码 ---------- */
+  // 访问令牌按竞赛缓存在 localStorage：输对一次后，正常浏览无需重复输入
+  const CTOKEN_PREFIX = "oj_ctoken_";
+
+  function contestToken(cid) { return localStorage.getItem(CTOKEN_PREFIX + cid) || ""; }
+  function setContestToken(cid, t) {
+    if (t) localStorage.setItem(CTOKEN_PREFIX + cid, t);
+    else localStorage.removeItem(CTOKEN_PREFIX + cid);
+  }
+  function contestHeaders(cid) {
+    const t = contestToken(cid);
+    return t ? { "X-Contest-Token": t } : {};
+  }
+
+  let _pwPromptActive = false;
+
+  // 弹出竞赛密码输入框；解锁成功 resolve(true)，取消 resolve(false)
+  function askContestPassword(cid, title) {
+    if (_pwPromptActive) return Promise.resolve(false);
+    _pwPromptActive = true;
+    return new Promise((resolve) => {
+      const done = (v) => { _pwPromptActive = false; mask.remove(); resolve(v); };
+      const mask = document.createElement("div");
+      mask.className = "modal-mask";
+      mask.innerHTML = `
+        <div class="modal" style="max-width:420px">
+          <h3>🔒 需要竞赛密码</h3>
+          <p class="muted" style="margin:4px 0 12px">竞赛「${esc(title || cid)}」已设置访问密码，输入正确密码后即可查看题面、榜单并提交代码。</p>
+          <div class="form-group"><input id="cpwInput" type="password" placeholder="请输入访问密码" autocomplete="off"></div>
+          <div id="cpwErr" class="hint" style="color:var(--red);min-height:20px"></div>
+          <div class="modal-actions">
+            <button class="btn btn-outline" id="cpwCancel">取消</button>
+            <button class="btn btn-primary" id="cpwOk">确定</button>
+          </div>
+        </div>`;
+      document.body.appendChild(mask);
+      const input = mask.querySelector("#cpwInput");
+      const errBox = mask.querySelector("#cpwErr");
+      setTimeout(() => input.focus(), 50);
+      const submit = async () => {
+        const pw = input.value;
+        if (!pw) { errBox.textContent = "请输入访问密码"; return; }
+        try {
+          const res = await api("/contests/" + encodeURIComponent(cid) + "/verify-password",
+                                { method: "POST", body: { password: pw } });
+          if (res && res.token) setContestToken(cid, res.token);
+          toast("密码正确，已进入竞赛", "success");
+          done(true);
+        } catch (e) {
+          errBox.textContent = e.message || "密码错误，请重试";   // 输错的明确提示
+          input.select();
+        }
+      };
+      mask.querySelector("#cpwOk").onclick = submit;
+      mask.querySelector("#cpwCancel").onclick = () => done(false);
+      input.onkeydown = (e) => { if (e.key === "Enter") submit(); };
+      mask.addEventListener("click", (e) => { if (e.target === mask) done(false); });
+    });
+  }
+
+  // 进入竞赛入口：探测访问权限，需要密码时弹窗解锁，成功后跳转
+  async function enterContest(cid, url) {
+    try {
+      await api("/contests/" + encodeURIComponent(cid), { headers: contestHeaders(cid) });
+    } catch (e) {
+      if (e.data && e.data.need_password) {
+        setContestToken(cid, "");   // 旧令牌可能已失效（密码被修改）
+        const ok = await askContestPassword(cid, e.data.contest && e.data.contest.title);
+        if (!ok) return;
+      } else {
+        toast(e.message, "error");
+        return;
+      }
+    }
+    location.href = url || ("/leaderboard.html?c=" + encodeURIComponent(cid));
+  }
+
   function openModal(title, bodyHTML) {
     const mask = document.createElement("div");
     mask.className = "modal-mask";
@@ -211,6 +291,7 @@
     api, esc, fmtTime, fmtDuration, fmtMem, verdictBadge, difficultyLabel,
     toast, el, openModal, confirmDialog, boot, countdown,
     setSession, logout, currentUser, isAdmin, requireAuth, goLogin,
+    contestToken, setContestToken, contestHeaders, askContestPassword, enterContest,
     store,
   };
 })(window);

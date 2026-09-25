@@ -16,7 +16,7 @@
         <div class="sub" id="contestSub">选择竞赛查看实时排名，封榜期间榜单冻结</div>
       </div>
       <div class="flex gap-8">
-        <select id="contestSelect" style="width:auto" onchange="load()"></select>
+        <select id="contestSelect" style="width:auto" onchange="switchContest()"></select>
         <button class="btn btn-outline" onclick="load()">🔄 刷新</button>
       </div>
     </div>
@@ -41,28 +41,57 @@
   <script>
     OJ.boot("leaderboard");
     let curContest = null;
+    let cancelledFor = null;   // 用户取消输入密码的竞赛，避免自动刷新反复弹窗
 
     async function loadContests() {
       const sel = OJ.el("contestSelect");
       try {
         const data = await OJ.api("/contests");
-        sel.innerHTML = data.items.map(c => `<option value="${OJ.esc(c.id)}">${OJ.esc(c.title)}</option>`).join("");
-        if (data.items.length) { sel.value = data.items[0].id; load(); }
+        sel.innerHTML = data.items.map(c => `<option value="${OJ.esc(c.id)}">${c.has_password ? "🔑 " : ""}${OJ.esc(c.title)}</option>`).join("");
+        if (data.items.length) {
+          const want = new URLSearchParams(location.search).get("c");
+          sel.value = (want && data.items.some(c => c.id === want)) ? want : data.items[0].id;
+          load();
+        }
         else { OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">暂无竞赛</td></tr>`; }
       } catch (e) {}
     }
+
+    function switchContest() { cancelledFor = null; load(); }
 
     async function load() {
       const cid = OJ.el("contestSelect").value;
       if (!cid) return;
       try {
-        const d = await OJ.api("/leaderboard/" + cid);
+        const d = await OJ.api("/leaderboard/" + cid, { headers: OJ.contestHeaders(cid) });
         curContest = d;
         render(d);
       } catch (e) {
+        if (e.data && e.data.need_password) {
+          // 直达链接/令牌失效：先清掉可能过期的令牌，再弹窗输密码
+          OJ.setContestToken(cid, "");
+          if (cancelledFor === cid) { renderLocked(); return; }
+          const ok = await OJ.askContestPassword(cid, e.data.contest && e.data.contest.title);
+          if (ok) { cancelledFor = null; return load(); }
+          cancelledFor = cid;
+          renderLocked();
+          return;
+        }
         OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">${OJ.esc(e.message)}</td></tr>`;
       }
     }
+
+    function renderLocked() {
+      OJ.el("lbTitle").textContent = "🔒 受密码保护的竞赛";
+      OJ.el("contestSub").textContent = "该竞赛已设置访问密码";
+      OJ.el("lbHead").innerHTML = "";
+      OJ.el("lbBody").innerHTML = `<tr><td colspan="10" class="empty">
+        🔒 需要竞赛密码才能查看榜单
+        <div class="mt-8"><button class="btn btn-primary btn-sm" onclick="retryUnlock()">输入密码</button></div>
+      </td></tr>`;
+    }
+
+    function retryUnlock() { cancelledFor = null; load(); }
 
     function render(d) {
       OJ.el("lbTitle").textContent = d.contest_title;

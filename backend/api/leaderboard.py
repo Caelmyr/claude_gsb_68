@@ -4,7 +4,8 @@ import os
 from flask import Blueprint, request
 
 from backend import config
-from backend.api import ok, err, require_auth, get_current_user
+from backend.api import ok, err, require_auth, get_current_user, \
+    contest_access_granted, need_password
 from backend.storage import read_json
 from backend.judge.ranking import get_leaderboard, contest_status
 from backend.utils import user_key, frozen_now
@@ -25,6 +26,8 @@ def leaderboard(contest_id):
     as_admin = request.user.get("role") == "admin"
     if not contest.get("visble", True) and not as_admin:
         return err("竞赛不存在", 404)
+    if not contest_access_granted(contest, request.user):
+        return need_password(contest)
     data = get_leaderboard(contest, as_admin=as_admin)
     data["rows"] = sorted(data.get("rows", []), key=lambda r: r.get("penalty", 0))
     data["contest_status"] = contest_status(contest)

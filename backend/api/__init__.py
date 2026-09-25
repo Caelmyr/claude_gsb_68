@@ -4,6 +4,7 @@
   {"code": 0, "data": ...}          成功
   {"code": <非0>, "message": ...}    失败
 """
+import hmac
 import os
 from functools import wraps
 
@@ -80,6 +81,57 @@ def require_admin(fn):
         request.user = user
         return fn(*args, **kwargs)
     return wrapper
+
+
+# ---- 竞赛访问密码 ----
+
+def _extract_contest_token():
+    """从请求中提取竞赛访问令牌（请求头 / 查询参数 / JSON 体）。"""
+    token = request.headers.get("X-Contest-Token", "")
+    if token:
+        return token
+    token = request.args.get("contest_token", "")
+    if token:
+        return token
+    if request.method in ("POST", "PUT", "PATCH"):
+        data = request.get_json(silent=True) or {}
+        return data.get("contest_token") or ""
+    return ""
+
+
+def contest_access_granted(contest, user=None):
+    """判断当前请求是否有权访问设密竞赛的内容（题面、提交、榜单等）。
+
+    规则：未设密码 -> 公开放行；管理员 -> 直接放行；
+    否则需持有 verify-password 接口签发的访问令牌。
+    令牌签名内容绑定当前密码哈希，修改/清除密码后旧令牌自动失效。
+    """
+    if not contest or not contest.get("password_hash"):
+        return True
+    if user is None:
+        user = get_current_user()
+    if user and user.get("role") == "admin":
+        return True
+    token = _extract_contest_token()
+    if not token:
+        return False
+    msg = verify_token(token, config.SECRET_KEY)
+    expected = f"contest:{contest.get('id')}:{contest.get('password_hash')}"
+    return msg is not None and hmac.compare_digest(msg, expected)
+
+
+def need_password(contest):
+    """竞赛设有访问密码且请求未通过校验时的统一响应。
+
+    附带 need_password 标记与竞赛基本信息，供前端弹出密码输入框。
+    """
+    return jsonify({
+        "code": 1001,
+        "message": "该竞赛已设置访问密码，请输入密码后访问",
+        "need_password": True,
+        "contest": {"id": contest.get("id"), "title": contest.get("title", ""),
+                    "has_password": True},
+    }), 403
 
 
 # ---- 蓝图注册 ----

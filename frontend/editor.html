@@ -145,7 +145,7 @@
         const data = await OJ_.api("/contests");
         const runnable = data.items.filter(c => c.status === "running");
         sel.innerHTML = '<option value="">练习模式（不计排名）</option>' +
-          runnable.map(c => `<option value="${OJ_.esc(c.id)}">${OJ_.esc(c.title)}</option>`).join("");
+          runnable.map(c => `<option value="${OJ_.esc(c.id)}">${c.has_password ? "🔑 " : ""}${OJ_.esc(c.title)}</option>`).join("");
       } catch (e) {}
     }
 
@@ -170,16 +170,32 @@
       btn.disabled = true; btn.textContent = "提交中…";
       document.getElementById("resultCard").classList.remove("hidden");
       document.getElementById("resultBadge").innerHTML = `<span class="badge PENDING pulse">排队中</span>`;
+      const cid = document.getElementById("contestSelect").value || null;
+      const body = {
+        code, language: document.getElementById("langSelect").value,
+        problem_id: document.getElementById("problemSelect").value,
+        contest_id: cid,
+      };
+      if (cid && OJ_.contestToken(cid)) body.contest_token = OJ_.contestToken(cid);
       try {
-        const body = {
-          code, language: document.getElementById("langSelect").value,
-          problem_id: document.getElementById("problemSelect").value,
-          contest_id: document.getElementById("contestSelect").value || null,
-        };
         const res = await OJ_.api("/submissions", { method: "POST", body });
         pollResult(res.id);
       } catch (e) {
-        OJ_.toast(e.message, "error");
+        if (e.data && e.data.need_password && cid) {
+          // 竞赛设有访问密码：解锁成功后携带新令牌重试提交
+          OJ_.setContestToken(cid, "");
+          const ok = await OJ_.askContestPassword(cid, e.data.contest && e.data.contest.title);
+          if (ok) {
+            body.contest_token = OJ_.contestToken(cid);
+            try {
+              const res2 = await OJ_.api("/submissions", { method: "POST", body });
+              pollResult(res2.id);
+              return;
+            } catch (e2) { OJ_.toast(e2.message, "error"); }
+          }
+        } else {
+          OJ_.toast(e.message, "error");
+        }
         btn.disabled = false; btn.textContent = "🚀 提交评测";
       }
     }
